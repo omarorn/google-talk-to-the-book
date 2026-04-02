@@ -43,6 +43,9 @@ export default function App() {
   const [editApiKey, setEditApiKey] = useState(apiKey);
 
   // Voice Settings State
+  const [voiceName, setVoiceName] = useState(() => localStorage.getItem('voiceName') || 'Kore');
+  const [editVoiceName, setEditVoiceName] = useState(voiceName);
+
   const [speakingRate, setSpeakingRate] = useState<number>(() => {
     const saved = localStorage.getItem('speakingRate');
     return saved ? parseFloat(saved) : 1.0;
@@ -387,7 +390,7 @@ export default function App() {
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } },
             languageCode: "is-IS",
           },
           systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe German, Chinese, or any other languages. If the audio is unclear, assume it is Icelandic or English.",
@@ -519,6 +522,8 @@ export default function App() {
   const saveProfile = () => {
     setProfile(editProfile);
     setApiKey(editApiKey);
+    setVoiceName(editVoiceName);
+    localStorage.setItem('voiceName', editVoiceName);
     setShowProfileModal(false);
   };
 
@@ -550,6 +555,7 @@ export default function App() {
             onClick={() => {
               setEditProfile(profile);
               setEditApiKey(apiKey);
+              setEditVoiceName(voiceName);
               setShowProfileModal(true);
             }}
             className="flex items-center gap-3 p-2 pr-4 bg-[#11141a] border border-slate-800 rounded-full hover:bg-slate-800/50 transition-colors"
@@ -852,6 +858,19 @@ export default function App() {
               <div className="pt-4 border-t border-slate-800 flex flex-col gap-5">
                 <h3 className="text-lg font-medium text-white">Raddstillingar (AI)</h3>
                 
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-slate-400">Rödd (Voice)</label>
+                  <select 
+                    value={editVoiceName}
+                    onChange={e => setEditVoiceName(e.target.value)}
+                    className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors appearance-none"
+                  >
+                    {['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'].map(voice => (
+                      <option key={voice} value={voice}>{voice}</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="flex flex-col gap-2">
                   <div className="flex justify-between">
                     <label className="text-sm font-medium text-slate-400">Hraði (Speaking Rate)</label>
