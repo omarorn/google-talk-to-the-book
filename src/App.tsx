@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera, MonitorUp, Share2, Send, VideoOff } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 type UserStatus = 'online' | 'offline' | 'in-game';
 
 interface UserProfile {
@@ -30,6 +28,10 @@ export default function App() {
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [editProfile, setEditProfile] = useState<UserProfile>(profile);
+
+  // API Key State
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
+  const [editApiKey, setEditApiKey] = useState(apiKey);
 
   // Voice Settings State
   const [speakingRate, setSpeakingRate] = useState<number>(() => {
@@ -76,6 +78,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('userProfile', JSON.stringify(profile));
   }, [profile]);
+
+  useEffect(() => {
+    localStorage.setItem('geminiApiKey', apiKey);
+  }, [apiKey]);
 
   useEffect(() => {
     if (transcriptContainerRef.current) {
@@ -176,12 +182,34 @@ export default function App() {
       setError(null);
       setTranscript([]);
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-        },
-      });
+      const currentKey = apiKey.trim() || process.env.GEMINI_API_KEY;
+      if (!currentKey) {
+        setError("API lykill vantar. Vinsamlegast bættu honum við í stillingum.");
+        setIsConnecting(false);
+        return;
+      }
+      const ai = new GoogleGenAI({ apiKey: currentKey });
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+          },
+        });
+      } catch (mediaErr: any) {
+        console.error("Microphone error:", mediaErr);
+        if (mediaErr.name === 'NotAllowedError') {
+          setError("Aðgangur að hljóðnema var hafnaður. Vinsamlegast leyfðu hljóðnema í vafranum.");
+        } else if (mediaErr.name === 'NotFoundError') {
+          setError("Enginn hljóðnemi fannst.");
+        } else {
+          setError(`Villa við að opna hljóðnema: ${mediaErr.message || mediaErr.name}`);
+        }
+        setIsConnecting(false);
+        return;
+      }
       mediaStreamRef.current = stream;
 
       const audioCtx = new window.AudioContext({ sampleRate: 16000 });
@@ -309,9 +337,16 @@ export default function App() {
           onclose: () => {
             stopConversation();
           },
-          onerror: (err) => {
+          onerror: (err: any) => {
             console.error("Live API Error:", err);
-            setError("Connection error occurred.");
+            let errMsg = "Tengingarvilla kom upp.";
+            if (err.message) {
+              errMsg += ` (${err.message})`;
+              if (err.message.includes("API key not valid") || err.message.includes("401") || err.message.includes("403")) {
+                errMsg = "Ógildur API lykill. Vinsamlegast athugaðu stillingar.";
+              }
+            }
+            setError(errMsg);
             stopConversation();
           }
         },
@@ -320,7 +355,7 @@ export default function App() {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
           },
-          systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar alltaf íslensku fyrst og fremst.",
+          systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe Chinese or any other languages. If the audio is unclear, assume it is Icelandic or English.",
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
@@ -328,9 +363,9 @@ export default function App() {
 
       sessionRef.current = sessionPromise;
 
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to start conversation:", err);
-      setError("Could not access microphone or connect to AI.");
+      setError(`Villa við að tengjast: ${err.message || "Óþekkt villa"}`);
       setIsConnecting(false);
       stopConversation();
     }
@@ -445,6 +480,7 @@ export default function App() {
 
   const saveProfile = () => {
     setProfile(editProfile);
+    setApiKey(editApiKey);
     setShowProfileModal(false);
   };
 
@@ -475,6 +511,7 @@ export default function App() {
           <button 
             onClick={() => {
               setEditProfile(profile);
+              setEditApiKey(apiKey);
               setShowProfileModal(true);
             }}
             className="flex items-center gap-3 p-2 pr-4 bg-[#11141a] border border-slate-800 rounded-full hover:bg-slate-800/50 transition-colors"
@@ -745,6 +782,21 @@ export default function App() {
                       {status.charAt(0).toUpperCase() + status.slice(1)}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-5">
+                <h3 className="text-lg font-medium text-white">API Stillingar</h3>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-slate-400">Gemini API Lykill (BYOK)</label>
+                  <input 
+                    type="password" 
+                    value={editApiKey}
+                    onChange={e => setEditApiKey(e.target.value)}
+                    placeholder="Skildu eftir autt til að nota sjálfgefinn"
+                    className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <p className="text-xs text-slate-500">Notaðu þinn eigin lykil. Vistast aðeins í þínum vafra.</p>
                 </div>
               </div>
 
