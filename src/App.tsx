@@ -3,6 +3,7 @@ import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera,
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import { logger } from './lib/logger';
+import { MCPClient } from './lib/mcp';
 
 type UserStatus = 'online' | 'offline' | 'in-game';
 
@@ -17,6 +18,8 @@ interface TranscriptMessage {
   text?: string;
   inlineData?: { mimeType: string; data: string };
   isFinal?: boolean;
+  thought?: string;
+  toolCalls?: any[];
 }
 
 export default function App() {
@@ -44,6 +47,10 @@ export default function App() {
   // API Key State
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
   const [editApiKey, setEditApiKey] = useState(apiKey);
+
+  // MCP State
+  const [mcpUrl, setMcpUrl] = useState(() => localStorage.getItem('mcpUrl') || '');
+  const [editMcpUrl, setEditMcpUrl] = useState(mcpUrl);
 
   // Voice Settings State
   const [voiceName, setVoiceName] = useState(() => localStorage.getItem('voiceName') || 'Kore');
@@ -90,6 +97,7 @@ export default function App() {
   const playbackContextRef = useRef<AudioContext | null>(null);
 
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
+  const mcpClientRef = useRef<MCPClient | null>(null);
 
   useEffect(() => {
     localStorage.setItem('userProfile', JSON.stringify(profile));
@@ -188,6 +196,10 @@ export default function App() {
       playbackContextRef.current.close();
       playbackContextRef.current = null;
     }
+    if (mcpClientRef.current) {
+      mcpClientRef.current.disconnect();
+      mcpClientRef.current = null;
+    }
     
     audioQueueRef.current = [];
     isPlayingRef.current = false;
@@ -209,6 +221,27 @@ export default function App() {
         return;
       }
       const ai = new GoogleGenAI({ apiKey: currentKey });
+
+      let tools: any[] = [];
+      if (mcpUrl.trim()) {
+        try {
+          const client = new MCPClient(mcpUrl.trim());
+          await client.connect();
+          mcpClientRef.current = client;
+          const mcpTools = await client.getTools();
+          if (mcpTools.length > 0) {
+            tools = [{
+              functionDeclarations: mcpTools.map(t => ({
+                name: t.name,
+                description: t.description || '',
+                parameters: t.inputSchema
+              }))
+            }];
+          }
+        } catch (err) {
+          logger.error("Failed to initialize MCP client", { err });
+        }
+      }
 
       let stream;
       try {
@@ -313,15 +346,67 @@ export default function App() {
                   }
                 }
                 if (part.text) {
+                  if (part.thought) {
+                    setTranscript(prev => {
+                      const last = prev[prev.length - 1];
+                      if (last && last.role === 'model' && !last.isFinal && last.thought !== undefined) {
+                        const newPrev = [...prev];
+                        newPrev[newPrev.length - 1] = { ...last, thought: last.thought + part.text };
+                        return newPrev;
+                      }
+                      return [...prev, { role: 'model', thought: part.text, isFinal: false }];
+                    });
+                  } else {
+                    setTranscript(prev => {
+                      const last = prev[prev.length - 1];
+                      if (last && last.role === 'model' && !last.isFinal && last.text !== undefined) {
+                        const newPrev = [...prev];
+                        newPrev[newPrev.length - 1] = { ...last, text: last.text + part.text };
+                        return newPrev;
+                      }
+                      return [...prev, { role: 'model', text: part.text, isFinal: false }];
+                    });
+                  }
+                }
+                if (part.functionCall) {
                   setTranscript(prev => {
                     const last = prev[prev.length - 1];
-                    if (last && last.role === 'model' && !last.isFinal && last.text !== undefined) {
+                    if (last && last.role === 'model' && !last.isFinal) {
                       const newPrev = [...prev];
-                      newPrev[newPrev.length - 1] = { ...last, text: last.text + part.text };
+                      newPrev[newPrev.length - 1] = { 
+                        ...last, 
+                        toolCalls: [...(last.toolCalls || []), part.functionCall] 
+                      };
                       return newPrev;
                     }
-                    return [...prev, { role: 'model', text: part.text, isFinal: false }];
+                    return [...prev, { role: 'model', toolCalls: [part.functionCall], isFinal: false }];
                   });
+                  
+                  if (mcpClientRef.current) {
+                    mcpClientRef.current.callTool(part.functionCall.name, part.functionCall.args)
+                      .then(result => {
+                        sessionPromise.then(session => {
+                          session.sendToolResponse({
+                            functionResponses: [{
+                              id: part.functionCall.id,
+                              name: part.functionCall.name,
+                              response: result
+                            }]
+                          });
+                        });
+                      })
+                      .catch(err => {
+                        sessionPromise.then(session => {
+                          session.sendToolResponse({
+                            functionResponses: [{
+                              id: part.functionCall.id,
+                              name: part.functionCall.name,
+                              response: { error: err.message }
+                            }]
+                          });
+                        });
+                      });
+                  }
                 }
               }
             }
@@ -399,6 +484,8 @@ export default function App() {
           systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe German, Chinese, or any other languages. If the audio is unclear, assume it is Icelandic or English.",
           inputAudioTranscription: {},
           outputAudioTranscription: {},
+          tools: tools.length > 0 ? tools : undefined,
+          thinkingConfig: { thinkingLevel: 'high' as any },
         },
       });
 
@@ -540,19 +627,113 @@ export default function App() {
         if (currentAttachment) currentParts.push({ inlineData: { mimeType: currentAttachment.mimeType, data: currentAttachment.base64 } });
         contents.push({ role: 'user', parts: currentParts });
 
-        const response = await ai.models.generateContent({
+        let tools: any[] = [];
+        let mcpClient: MCPClient | null = null;
+        if (mcpUrl.trim()) {
+          try {
+            mcpClient = new MCPClient(mcpUrl.trim());
+            await mcpClient.connect();
+            const mcpTools = await mcpClient.getTools();
+            if (mcpTools.length > 0) {
+              tools = [{
+                functionDeclarations: mcpTools.map(t => ({
+                  name: t.name,
+                  description: t.description || '',
+                  parameters: t.inputSchema
+                }))
+              }];
+            }
+          } catch (err) {
+            logger.error("Failed to initialize MCP client for standard chat", { err });
+          }
+        }
+
+        let response = await ai.models.generateContent({
           model: 'gemini-3.1-pro-preview',
           contents: contents,
           config: {
             systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe German, Chinese, or any other languages. If the audio is unclear, assume it is Icelandic or English.",
+            tools: tools.length > 0 ? tools : undefined,
+            thinkingConfig: { thinkingLevel: 'high' as any },
           }
         });
 
-        setTranscript(prev => [...prev, {
-          role: 'model',
-          text: response.text,
-          isFinal: true
-        }]);
+        let newMsg: TranscriptMessage = { role: 'model', isFinal: true };
+        if (response.candidates?.[0]?.content?.parts) {
+          for (const part of response.candidates[0].content.parts) {
+            if (part.text) {
+              if (part.thought) {
+                newMsg.thought = (newMsg.thought || '') + part.text;
+              } else {
+                newMsg.text = (newMsg.text || '') + part.text;
+              }
+            }
+            if (part.functionCall) {
+              newMsg.toolCalls = [...(newMsg.toolCalls || []), part.functionCall];
+            }
+          }
+        } else {
+          newMsg.text = response.text;
+        }
+
+        setTranscript(prev => [...prev, newMsg]);
+
+        if (newMsg.toolCalls && newMsg.toolCalls.length > 0 && mcpClient) {
+          const functionResponses: any[] = [];
+          for (const tc of newMsg.toolCalls) {
+            try {
+              const result = await mcpClient.callTool(tc.name, tc.args);
+              functionResponses.push({
+                functionResponse: {
+                  id: tc.id,
+                  name: tc.name,
+                  response: result
+                }
+              });
+            } catch (err: any) {
+              functionResponses.push({
+                functionResponse: {
+                  id: tc.id,
+                  name: tc.name,
+                  response: { error: err.message }
+                }
+              });
+            }
+          }
+
+          contents.push(response.candidates![0].content);
+          contents.push({ role: 'user', parts: functionResponses });
+
+          response = await ai.models.generateContent({
+            model: 'gemini-3.1-pro-preview',
+            contents: contents,
+            config: {
+              systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe German, Chinese, or any other languages. If the audio is unclear, assume it is Icelandic or English.",
+              tools: tools.length > 0 ? tools : undefined,
+              thinkingConfig: { thinkingLevel: 'high' as any },
+            }
+          });
+
+          const finalMsg: TranscriptMessage = { role: 'model', isFinal: true };
+          if (response.candidates?.[0]?.content?.parts) {
+            for (const part of response.candidates[0].content.parts) {
+              if (part.text) {
+                if (part.thought) {
+                  finalMsg.thought = (finalMsg.thought || '') + part.text;
+                } else {
+                  finalMsg.text = (finalMsg.text || '') + part.text;
+                }
+              }
+            }
+          } else {
+            finalMsg.text = response.text;
+          }
+          setTranscript(prev => [...prev, finalMsg]);
+        }
+
+        if (mcpClient) {
+          mcpClient.disconnect();
+        }
       } catch (err: any) {
         logger.error("Chat error", { error: err });
         setError("Villa við að senda skilaboð: " + err.message);
@@ -591,7 +772,9 @@ export default function App() {
     setProfile(editProfile);
     setApiKey(editApiKey);
     setVoiceName(editVoiceName);
+    setMcpUrl(editMcpUrl);
     localStorage.setItem('voiceName', editVoiceName);
+    localStorage.setItem('mcpUrl', editMcpUrl);
     setShowProfileModal(false);
   };
 
@@ -624,6 +807,7 @@ export default function App() {
               setEditProfile(profile);
               setEditApiKey(apiKey);
               setEditVoiceName(voiceName);
+              setEditMcpUrl(mcpUrl);
               setShowProfileModal(true);
             }}
             className="flex items-center gap-3 p-2 pr-4 bg-[#11141a] border border-slate-800 rounded-full hover:bg-slate-800/50 transition-colors"
@@ -802,6 +986,23 @@ export default function App() {
                           ? 'bg-indigo-500/20 text-indigo-100 border border-indigo-500/30 rounded-tr-sm' 
                           : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-sm'
                       }`}>
+                        {msg.thought && (
+                          <div className="mb-3 p-3 bg-black/20 rounded-xl border border-slate-700/50 text-sm text-slate-400 italic">
+                            <div className="text-xs font-semibold uppercase tracking-wider mb-1 text-slate-500">Hugsun (Thinking)</div>
+                            <div className="markdown-body opacity-80">
+                              <ReactMarkdown>{msg.thought}</ReactMarkdown>
+                            </div>
+                          </div>
+                        )}
+                        {msg.toolCalls && msg.toolCalls.length > 0 && (
+                          <div className="mb-3 flex flex-col gap-2">
+                            {msg.toolCalls.map((tc, tcIdx) => (
+                              <div key={tcIdx} className="p-2 bg-indigo-500/10 rounded-lg border border-indigo-500/20 text-xs font-mono text-indigo-300">
+                                <span className="font-semibold text-indigo-400">Tool Call:</span> {tc.name}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         {msg.text && (
                           <div className="markdown-body">
                             <ReactMarkdown>{msg.text}</ReactMarkdown>
@@ -951,6 +1152,17 @@ export default function App() {
                     className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
                   />
                   <p className="text-xs text-slate-500">Notaðu þinn eigin lykil. Vistast aðeins í þínum vafra.</p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-slate-400">MCP Server URL</label>
+                  <input 
+                    type="text" 
+                    value={editMcpUrl}
+                    onChange={e => setEditMcpUrl(e.target.value)}
+                    placeholder="T.d. https://mcp.2076.is/sse"
+                    className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <p className="text-xs text-slate-500">Tengjast við ytri MCP þjón (Model Context Protocol).</p>
                 </div>
               </div>
 
