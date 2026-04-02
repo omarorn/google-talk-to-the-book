@@ -30,6 +30,29 @@ export default function App() {
   });
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [editProfile, setEditProfile] = useState<UserProfile>(profile);
+
+  // Voice Settings State
+  const [speakingRate, setSpeakingRate] = useState<number>(() => {
+    const saved = localStorage.getItem('speakingRate');
+    return saved ? parseFloat(saved) : 1.0;
+  });
+  const [voicePitch, setVoicePitch] = useState<number>(() => {
+    const saved = localStorage.getItem('voicePitch');
+    return saved ? parseInt(saved) : 0;
+  });
+  
+  const speakingRateRef = useRef(speakingRate);
+  const voicePitchRef = useRef(voicePitch);
+
+  useEffect(() => {
+    speakingRateRef.current = speakingRate;
+    localStorage.setItem('speakingRate', speakingRate.toString());
+  }, [speakingRate]);
+
+  useEffect(() => {
+    voicePitchRef.current = voicePitch;
+    localStorage.setItem('voicePitch', voicePitch.toString());
+  }, [voicePitch]);
   
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -98,6 +121,12 @@ export default function App() {
     
     const source = ctx.createBufferSource();
     source.buffer = buffer;
+    source.playbackRate.value = speakingRateRef.current;
+    
+    // detune is in cents (100 cents = 1 semitone). 
+    // Note: in standard Web Audio API, playbackRate and detune both affect speed and pitch together.
+    source.detune.value = voicePitchRef.current; 
+    
     source.connect(ctx.destination);
     source.onended = () => {
       isPlayingRef.current = false;
@@ -289,9 +318,9 @@ export default function App() {
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
           },
-          systemInstruction: "You are Bók Lífsins (The Book of Life), a wise and helpful Icelandic AI assistant. You speak Icelandic.",
+          systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar alltaf íslensku fyrst og fremst.",
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
@@ -716,6 +745,38 @@ export default function App() {
                       {status.charAt(0).toUpperCase() + status.slice(1)}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-800 flex flex-col gap-5">
+                <h3 className="text-lg font-medium text-white">Raddstillingar (AI)</h3>
+                
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between">
+                    <label className="text-sm font-medium text-slate-400">Hraði (Speaking Rate)</label>
+                    <span className="text-sm text-indigo-400">{speakingRate.toFixed(1)}x</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0.5" max="2.0" step="0.1" 
+                    value={speakingRate}
+                    onChange={e => setSpeakingRate(parseFloat(e.target.value))}
+                    className="accent-indigo-500"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between">
+                    <label className="text-sm font-medium text-slate-400">Tónhæð (Pitch)</label>
+                    <span className="text-sm text-indigo-400">{voicePitch > 0 ? '+' : ''}{voicePitch} cents</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="-1200" max="1200" step="100" 
+                    value={voicePitch}
+                    onChange={e => setVoicePitch(parseInt(e.target.value))}
+                    className="accent-indigo-500"
+                  />
                 </div>
               </div>
 
