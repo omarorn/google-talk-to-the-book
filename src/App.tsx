@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle } from 'lucide-react';
+import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera, MonitorUp, Share2, Send, VideoOff } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -19,6 +19,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
   
+  // New State
+  const [textInput, setTextInput] = useState('');
+  const [videoMode, setVideoMode] = useState<'none' | 'camera' | 'screen'>('none');
+  
   // User Profile State
   const [profile, setProfile] = useState<UserProfile>(() => {
     const saved = localStorage.getItem('userProfile');
@@ -32,6 +36,12 @@ export default function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  // Video Refs
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoStreamRef = useRef<MediaStream | null>(null);
+  const videoIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Audio playback queue
   const audioQueueRef = useRef<AudioBuffer[]>([]);
@@ -97,6 +107,8 @@ export default function App() {
   };
 
   const stopConversation = () => {
+    stopVideo();
+    
     if (sessionRef.current) {
       sessionRef.current.then((session: any) => session.close?.());
       sessionRef.current = null;
@@ -295,6 +307,107 @@ export default function App() {
     }
   };
 
+  // Video Sharing Logic
+  const startVideo = async (mode: 'camera' | 'screen') => {
+    try {
+      if (videoStreamRef.current) {
+        stopVideo();
+      }
+      
+      const stream = mode === 'camera' 
+        ? await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+        : await navigator.mediaDevices.getDisplayMedia({ video: { width: 640, height: 480 } });
+        
+      videoStreamRef.current = stream;
+      setVideoMode(mode);
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+      }
+
+      videoIntervalRef.current = setInterval(() => {
+        captureAndSendFrame();
+      }, 1000); // 1 fps
+      
+      stream.getVideoTracks()[0].onended = () => {
+        stopVideo();
+      };
+    } catch (err) {
+      console.error("Failed to start video:", err);
+      setVideoMode('none');
+    }
+  };
+
+  const stopVideo = () => {
+    if (videoIntervalRef.current) {
+      clearInterval(videoIntervalRef.current);
+      videoIntervalRef.current = null;
+    }
+    if (videoStreamRef.current) {
+      videoStreamRef.current.getTracks().forEach(t => t.stop());
+      videoStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setVideoMode('none');
+  };
+
+  const captureAndSendFrame = () => {
+    if (!videoRef.current || !canvasRef.current || !sessionRef.current || !isConnected) return;
+    
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    
+    if (!ctx || video.videoWidth === 0 || video.videoHeight === 0) return;
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    const base64Data = dataUrl.split(',')[1];
+    
+    sessionRef.current.then((session: any) => {
+      session.sendRealtimeInput({
+        video: { mimeType: 'image/jpeg', data: base64Data }
+      });
+    });
+  };
+
+  // Text Input Logic
+  const sendTextMessage = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!textInput.trim() || !sessionRef.current || !isConnected) return;
+    
+    sessionRef.current.then((session: any) => {
+      session.sendRealtimeInput({ text: textInput });
+    });
+    
+    setTranscript(prev => [...prev, { role: 'user', text: textInput, isFinal: true }]);
+    setTextInput('');
+  };
+
+  // Share App Logic
+  const handleShare = async () => {
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: 'Bók Lífsins - Voice AI',
+          text: 'Talaðu við Bók Lífsins í gegnum rödd, myndavél og skjá!',
+          url: window.location.href,
+        });
+      } else {
+        await navigator.clipboard.writeText(window.location.href);
+        alert('Hlekkur afritaður!');
+      }
+    } catch (err) {
+      console.error('Error sharing:', err);
+    }
+  };
+
   useEffect(() => {
     return () => {
       stopConversation();
@@ -323,6 +436,13 @@ export default function App() {
           </button>
         </div>
         <div className="flex items-center gap-4">
+          <button 
+            onClick={handleShare}
+            className="p-3 bg-slate-800/50 text-slate-400 rounded-xl hover:bg-slate-800 hover:text-slate-300 transition-colors"
+            title="Deila"
+          >
+            <Share2 className="w-5 h-5" />
+          </button>
           <button 
             onClick={() => {
               setEditProfile(profile);
@@ -365,7 +485,30 @@ export default function App() {
               </div>
             </div>
 
-            <div className="h-48 bg-[#0a0c10] rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden relative shadow-inner">
+            {/* Video Preview */}
+            <div className={`relative rounded-2xl overflow-hidden border border-slate-800 bg-[#0a0c10] transition-all duration-300 ${videoMode !== 'none' ? 'h-48 opacity-100' : 'h-0 opacity-0 border-0'}`}>
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                muted 
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute top-3 left-3 px-2 py-1 bg-black/50 backdrop-blur-md rounded-md text-xs font-medium text-white flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                {videoMode === 'camera' ? 'Myndavél' : 'Skjár'}
+              </div>
+              <button 
+                onClick={stopVideo}
+                className="absolute top-3 right-3 p-1.5 bg-black/50 backdrop-blur-md rounded-md text-white hover:bg-red-500/80 transition-colors"
+              >
+                <VideoOff className="w-4 h-4" />
+              </button>
+            </div>
+            <canvas ref={canvasRef} className="hidden" />
+
+            {/* Audio Visualizer */}
+            <div className={`h-32 bg-[#0a0c10] rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden relative shadow-inner transition-all duration-300 ${videoMode !== 'none' ? 'h-24' : 'h-48'}`}>
               {isConnected ? (
                 <div className="flex items-center gap-1.5 h-16">
                   {[...Array(15)].map((_, i) => (
@@ -386,27 +529,59 @@ export default function App() {
               )}
             </div>
 
-            <button 
-              onClick={isConnected ? stopConversation : startConversation}
-              disabled={isConnecting}
-              className={`w-full py-4 rounded-2xl font-semibold text-lg flex items-center justify-center gap-3 transition-all ${
-                isConnected 
-                  ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20' 
-                  : 'bg-gradient-to-r from-indigo-500 to-violet-500 text-white hover:opacity-90 shadow-lg shadow-indigo-500/20'
-              }`}
-            >
-              {isConnected ? (
-                <>
-                  <Square className="w-5 h-5 fill-current" />
-                  Ljúka samtali
-                </>
-              ) : (
-                <>
-                  <Mic className="w-5 h-5" />
-                  {isConnecting ? 'Tengist...' : 'Byrja samtal'}
-                </>
-              )}
-            </button>
+            <div className="flex flex-col gap-3">
+              <button 
+                onClick={isConnected ? stopConversation : startConversation}
+                disabled={isConnecting}
+                className={`w-full py-4 rounded-2xl font-semibold text-lg flex items-center justify-center gap-3 transition-all ${
+                  isConnected 
+                    ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20' 
+                    : 'bg-gradient-to-r from-indigo-500 to-violet-500 text-white hover:opacity-90 shadow-lg shadow-indigo-500/20'
+                }`}
+              >
+                {isConnected ? (
+                  <>
+                    <Square className="w-5 h-5 fill-current" />
+                    Ljúka samtali
+                  </>
+                ) : (
+                  <>
+                    <Mic className="w-5 h-5" />
+                    {isConnecting ? 'Tengist...' : 'Byrja samtal'}
+                  </>
+                )}
+              </button>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <button 
+                  onClick={() => videoMode === 'camera' ? stopVideo() : startVideo('camera')}
+                  disabled={!isConnected}
+                  className={`py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all ${
+                    !isConnected ? 'opacity-50 cursor-not-allowed bg-slate-800/50 text-slate-500' :
+                    videoMode === 'camera' 
+                      ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' 
+                      : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800 border border-slate-700'
+                  }`}
+                >
+                  <Camera className="w-4 h-4" />
+                  Myndavél
+                </button>
+                <button 
+                  onClick={() => videoMode === 'screen' ? stopVideo() : startVideo('screen')}
+                  disabled={!isConnected}
+                  className={`py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 transition-all ${
+                    !isConnected ? 'opacity-50 cursor-not-allowed bg-slate-800/50 text-slate-500' :
+                    videoMode === 'screen' 
+                      ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' 
+                      : 'bg-slate-800/50 text-slate-300 hover:bg-slate-800 border border-slate-700'
+                  }`}
+                >
+                  <MonitorUp className="w-4 h-4" />
+                  Deila skjá
+                </button>
+              </div>
+            </div>
+            
             {error && (
               <div className="text-red-400 text-sm text-center bg-red-500/10 py-2 px-4 rounded-lg border border-red-500/20">{error}</div>
             )}
@@ -420,13 +595,13 @@ export default function App() {
               <h2 className="text-sm font-semibold tracking-widest text-slate-400">TRANSCRIPT</h2>
             </div>
             
-            <div className="bg-[#11141a] border border-slate-800 rounded-3xl p-8 flex-1 min-h-[450px] flex flex-col shadow-xl shadow-black/50">
+            <div className="bg-[#11141a] border border-slate-800 rounded-3xl p-6 flex-1 min-h-[450px] flex flex-col shadow-xl shadow-black/50">
               {transcript.length === 0 ? (
                 <div className="flex-1 flex items-center justify-center text-slate-500 text-lg">
                   Smelltu á Byrja til að hefja samtal...
                 </div>
               ) : (
-                <div ref={transcriptContainerRef} className="flex-1 flex flex-col gap-6 overflow-y-auto pr-4 scroll-smooth">
+                <div ref={transcriptContainerRef} className="flex-1 flex flex-col gap-6 overflow-y-auto pr-4 scroll-smooth mb-4">
                   {transcript.map((msg, idx) => (
                     <div key={idx} className={`flex flex-col gap-1.5 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                       <div className="flex items-center gap-2 px-2">
@@ -458,6 +633,25 @@ export default function App() {
                   ))}
                 </div>
               )}
+              
+              {/* Text Input */}
+              <form onSubmit={sendTextMessage} className="relative flex items-center mt-auto pt-4 border-t border-slate-800/50">
+                <input
+                  type="text"
+                  value={textInput}
+                  onChange={e => setTextInput(e.target.value)}
+                  disabled={!isConnected}
+                  placeholder={isConnected ? "Skrifaðu skilaboð..." : "Tengstu til að skrifa..."}
+                  className="w-full bg-[#0a0c10] border border-slate-800 rounded-2xl pl-5 pr-14 py-4 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={!isConnected || !textInput.trim()}
+                  className="absolute right-2 p-2.5 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 disabled:opacity-50 disabled:hover:bg-indigo-500 transition-colors"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </form>
             </div>
           </div>
 
