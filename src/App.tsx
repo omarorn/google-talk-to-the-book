@@ -354,10 +354,11 @@ export default function App() {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
+            languageCode: "is-IS",
           },
-          systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe Chinese or any other languages. If the audio is unclear, assume it is Icelandic or English.",
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
+          systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe German, Chinese, or any other languages. If the audio is unclear, assume it is Icelandic or English.",
+          inputAudioTranscription: { languageCodes: ["is-IS", "en-US"] },
+          outputAudioTranscription: { languageCodes: ["is-IS", "en-US"] },
         },
       });
 
