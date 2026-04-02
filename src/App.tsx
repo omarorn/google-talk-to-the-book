@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera, MonitorUp, Share2, Send, VideoOff } from 'lucide-react';
+import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera, MonitorUp, Share2, Send, VideoOff, Paperclip, X } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import { logger } from './lib/logger';
@@ -29,6 +29,9 @@ export default function App() {
   // New State
   const [textInput, setTextInput] = useState('');
   const [videoMode, setVideoMode] = useState<'none' | 'camera' | 'screen'>('none');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [attachment, setAttachment] = useState<{ file: File, base64: string, mimeType: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // User Profile State
   const [profile, setProfile] = useState<UserProfile>(() => {
@@ -482,16 +485,81 @@ export default function App() {
   };
 
   // Text Input Logic
-  const sendTextMessage = (e: React.FormEvent) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64String = (reader.result as string).split(',')[1];
+      setAttachment({ file, base64: base64String, mimeType: file.type });
+    };
+    reader.readAsDataURL(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const sendTextMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!textInput.trim() || !sessionRef.current || !isConnected) return;
+    if ((!textInput.trim() && !attachment) || isGenerating) return;
+
+    const userText = textInput;
+    const currentAttachment = attachment;
     
-    sessionRef.current.then((session: any) => {
-      session.sendRealtimeInput({ text: textInput });
-    });
-    
-    setTranscript(prev => [...prev, { role: 'user', text: textInput, isFinal: true }]);
     setTextInput('');
+    setAttachment(null);
+
+    const newUserMsg: TranscriptMessage = {
+      role: 'user',
+      text: userText,
+      inlineData: currentAttachment ? { mimeType: currentAttachment.mimeType, data: currentAttachment.base64 } : undefined,
+      isFinal: true
+    };
+
+    setTranscript(prev => [...prev, newUserMsg]);
+
+    if (isConnected && sessionRef.current) {
+      if (currentAttachment) {
+         logger.warn("Attachments are not supported in Live API mode yet.");
+      }
+      sessionRef.current.then((session: any) => {
+        session.sendRealtimeInput([{ text: userText }]);
+      });
+    } else {
+      setIsGenerating(true);
+      try {
+        const ai = new GoogleGenAI({ apiKey: apiKey || import.meta.env.VITE_GEMINI_API_KEY });
+        
+        const contents = transcript.map(msg => {
+          const parts: any[] = [];
+          if (msg.text) parts.push({ text: msg.text });
+          if (msg.inlineData) parts.push({ inlineData: msg.inlineData });
+          return { role: msg.role === 'model' ? 'model' : 'user', parts };
+        });
+        
+        const currentParts: any[] = [];
+        if (userText) currentParts.push({ text: userText });
+        if (currentAttachment) currentParts.push({ inlineData: { mimeType: currentAttachment.mimeType, data: currentAttachment.base64 } });
+        contents.push({ role: 'user', parts: currentParts });
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-pro-preview',
+          contents: contents,
+          config: {
+            systemInstruction: "Þú ert Bók Lífsins, vitur og hjálpsamur gervigreindaraðstoðarmaður. Þú talar og skilur aðeins íslensku og ensku. You are Bók Lífsins, a wise and helpful AI assistant. You only speak and understand Icelandic and English. Never speak or transcribe German, Chinese, or any other languages. If the audio is unclear, assume it is Icelandic or English.",
+          }
+        });
+
+        setTranscript(prev => [...prev, {
+          role: 'model',
+          text: response.text,
+          isFinal: true
+        }]);
+      } catch (err: any) {
+        logger.error("Chat error", { error: err });
+        setError("Villa við að senda skilaboð: " + err.message);
+      } finally {
+        setIsGenerating(false);
+      }
+    }
   };
 
   // Share App Logic
@@ -746,6 +814,13 @@ export default function App() {
                             className="max-w-full rounded-lg mt-2"
                           />
                         )}
+                        {msg.inlineData && msg.inlineData.mimeType.startsWith('audio/') && (
+                          <audio 
+                            controls 
+                            src={`data:${msg.inlineData.mimeType};base64,${msg.inlineData.data}`} 
+                            className="max-w-full mt-2 h-10"
+                          />
+                        )}
                         {!msg.isFinal && (
                           <span className="inline-block w-1.5 h-4 ml-1 bg-current animate-pulse opacity-50 align-middle" />
                         )}
@@ -757,20 +832,44 @@ export default function App() {
               
               {/* Text Input */}
               <form onSubmit={sendTextMessage} className="relative flex items-center mt-auto pt-4 border-t border-slate-800/50">
+                {attachment && (
+                  <div className="absolute bottom-full mb-2 left-0 bg-slate-800 rounded-lg p-2 flex items-center gap-2 border border-slate-700">
+                    <span className="text-xs text-slate-300 truncate max-w-[200px]">{attachment.file.name}</span>
+                    <button type="button" onClick={() => setAttachment(null)} className="text-slate-400 hover:text-red-400">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+                <input
+                  type="file"
+                  accept="audio/*"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isGenerating || isConnected}
+                  className="absolute left-2 p-2.5 text-slate-400 hover:text-indigo-400 disabled:opacity-50 transition-colors"
+                  title="Hengja við hljóðskrá"
+                >
+                  <Paperclip className="w-5 h-5" />
+                </button>
                 <input
                   type="text"
                   value={textInput}
                   onChange={e => setTextInput(e.target.value)}
-                  disabled={!isConnected}
-                  placeholder={isConnected ? "Skrifaðu skilaboð..." : "Tengstu til að skrifa..."}
-                  className="w-full bg-[#0a0c10] border border-slate-800 rounded-2xl pl-5 pr-14 py-4 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors disabled:opacity-50"
+                  disabled={isGenerating}
+                  placeholder={isConnected ? "Skrifaðu skilaboð (Live)..." : "Skrifaðu eða sendu hljóðskrá..."}
+                  className="w-full bg-[#0a0c10] border border-slate-800 rounded-2xl pl-12 pr-14 py-4 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors disabled:opacity-50"
                 />
                 <button
                   type="submit"
-                  disabled={!isConnected || !textInput.trim()}
+                  disabled={(!textInput.trim() && !attachment) || isGenerating}
                   className="absolute right-2 p-2.5 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 disabled:opacity-50 disabled:hover:bg-indigo-500 transition-colors"
                 >
-                  <Send className="w-4 h-4" />
+                  {isGenerating ? <Circle className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 </button>
               </form>
             </div>
