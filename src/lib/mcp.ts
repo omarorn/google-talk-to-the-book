@@ -6,14 +6,22 @@ export class MCPClient {
   private client: Client | null = null;
   private transport: SSEClientTransport | null = null;
   private url: string;
+  private token?: string;
 
-  constructor(url: string) {
+  constructor(url: string, token?: string) {
     this.url = url;
+    this.token = token;
   }
 
   async connect() {
     try {
-      this.transport = new SSEClientTransport(new URL(this.url));
+      const headers = this.token ? { Authorization: `Bearer ${this.token}` } : undefined;
+      
+      this.transport = new SSEClientTransport(new URL(this.url), {
+        eventSourceInit: headers ? { headers } as any : undefined,
+        requestInit: headers ? { headers } : undefined,
+      });
+      
       this.client = new Client(
         { name: "bok-lifsins-client", version: "1.0.0" },
         { capabilities: { tools: {} } }

@@ -1,26 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera, MonitorUp, Share2, Send, VideoOff, Paperclip, X } from 'lucide-react';
+import { Mic, Square, Activity, Camera, MonitorUp } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import ReactMarkdown from 'react-markdown';
 import { logger } from './lib/logger';
 import { MCPClient } from './lib/mcp';
-
-type UserStatus = 'online' | 'offline' | 'in-game';
-
-interface UserProfile {
-  username: string;
-  avatar: string;
-  status: UserStatus;
-}
-
-interface TranscriptMessage {
-  role: string;
-  text?: string;
-  inlineData?: { mimeType: string; data: string };
-  isFinal?: boolean;
-  thought?: string;
-  toolCalls?: any[];
-}
+import { UserProfile, TranscriptMessage, UserStatus } from './types';
+import { Header } from './components/Header';
+import { SettingsModal } from './components/SettingsModal';
+import { Transcript } from './components/Transcript';
+import { ChatInput } from './components/ChatInput';
+import { AnimatedOrb } from './components/AnimatedOrb';
 
 export default function App() {
   const [isConnected, setIsConnected] = useState(false);
@@ -51,6 +39,8 @@ export default function App() {
   // MCP State
   const [mcpUrl, setMcpUrl] = useState(() => localStorage.getItem('mcpUrl') || '');
   const [editMcpUrl, setEditMcpUrl] = useState(mcpUrl);
+  const [mcpToken, setMcpToken] = useState(() => localStorage.getItem('bokMcpToken') || '');
+  const [editMcpToken, setEditMcpToken] = useState(mcpToken);
 
   // Voice Settings State
   const [voiceName, setVoiceName] = useState(() => localStorage.getItem('voiceName') || 'Kore');
@@ -225,7 +215,7 @@ export default function App() {
       let tools: any[] = [];
       if (mcpUrl.trim()) {
         try {
-          const client = new MCPClient(mcpUrl.trim());
+          const client = new MCPClient(mcpUrl.trim(), mcpToken.trim() || process.env.BOK_MCP_TOKEN);
           await client.connect();
           mcpClientRef.current = client;
           const mcpTools = await client.getTools();
@@ -631,7 +621,7 @@ export default function App() {
         let mcpClient: MCPClient | null = null;
         if (mcpUrl.trim()) {
           try {
-            mcpClient = new MCPClient(mcpUrl.trim());
+            mcpClient = new MCPClient(mcpUrl.trim(), mcpToken.trim() || process.env.BOK_MCP_TOKEN);
             await mcpClient.connect();
             const mcpTools = await mcpClient.getTools();
             if (mcpTools.length > 0) {
@@ -773,8 +763,10 @@ export default function App() {
     setApiKey(editApiKey);
     setVoiceName(editVoiceName);
     setMcpUrl(editMcpUrl);
+    setMcpToken(editMcpToken);
     localStorage.setItem('voiceName', editVoiceName);
     localStorage.setItem('mcpUrl', editMcpUrl);
+    localStorage.setItem('bokMcpToken', editMcpToken);
     setShowProfileModal(false);
   };
 
@@ -808,6 +800,7 @@ export default function App() {
               setEditApiKey(apiKey);
               setEditVoiceName(voiceName);
               setEditMcpUrl(mcpUrl);
+              setEditMcpToken(mcpToken);
               setShowProfileModal(true);
             }}
             className="flex items-center gap-3 p-2 pr-4 bg-[#11141a] border border-slate-800 rounded-full hover:bg-slate-800/50 transition-colors"
@@ -1163,6 +1156,17 @@ export default function App() {
                     className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
                   />
                   <p className="text-xs text-slate-500">Tengjast við ytri MCP þjón (Model Context Protocol).</p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-sm font-medium text-slate-400">MCP Token (BOK_MCP_TOKEN)</label>
+                  <input 
+                    type="password" 
+                    value={editMcpToken}
+                    onChange={e => setEditMcpToken(e.target.value)}
+                    placeholder="Lykilorð eða token fyrir MCP þjón"
+                    className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <p className="text-xs text-slate-500">Notað til að auðkenna við MCP þjóninn (Authorization: Bearer).</p>
                 </div>
               </div>
 
