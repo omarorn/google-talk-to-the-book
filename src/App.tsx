@@ -1,15 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Square, Sun, ArrowRight, Activity } from 'lucide-react';
+import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+type UserStatus = 'online' | 'offline' | 'in-game';
+
+interface UserProfile {
+  username: string;
+  avatar: string;
+  status: UserStatus;
+}
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [transcript, setTranscript] = useState<{role: string, text: string}[]>([]);
+  const [transcript, setTranscript] = useState<{role: string, text: string, isFinal?: boolean}[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+  
+  // User Profile State
+  const [profile, setProfile] = useState<UserProfile>(() => {
+    const saved = localStorage.getItem('userProfile');
+    return saved ? JSON.parse(saved) : { username: 'Gestur', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Gestur', status: 'online' };
+  });
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [editProfile, setEditProfile] = useState<UserProfile>(profile);
   
   const sessionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -21,6 +37,18 @@ export default function App() {
   const audioQueueRef = useRef<AudioBuffer[]>([]);
   const isPlayingRef = useRef(false);
   const playbackContextRef = useRef<AudioContext | null>(null);
+
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    localStorage.setItem('userProfile', JSON.stringify(profile));
+  }, [profile]);
+
+  useEffect(() => {
+    if (transcriptContainerRef.current) {
+      transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
+    }
+  }, [transcript]);
 
   const playAudioBase64 = async (base64: string) => {
     if (!playbackContextRef.current) {
@@ -137,7 +165,6 @@ export default function App() {
             processor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // Calculate audio level for visualizer
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) {
                 sum += Math.abs(inputData[i]);
@@ -178,9 +205,55 @@ export default function App() {
                   playAudioBase64(part.inlineData.data);
                 }
                 if (part.text) {
-                  setTranscript(prev => [...prev, { role: 'model', text: part.text }]);
+                  setTranscript(prev => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.role === 'model' && !last.isFinal) {
+                      const newPrev = [...prev];
+                      newPrev[newPrev.length - 1] = { ...last, text: last.text + part.text };
+                      return newPrev;
+                    }
+                    return [...prev, { role: 'model', text: part.text, isFinal: false }];
+                  });
                 }
               }
+            }
+            
+            if (message.serverContent?.turnComplete) {
+               setTranscript(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.role === 'model') {
+                    const newPrev = [...prev];
+                    newPrev[newPrev.length - 1] = { ...last, isFinal: true };
+                    return newPrev;
+                  }
+                  return prev;
+               });
+            }
+
+            if (message.serverContent?.inputTranscription) {
+               const text = message.serverContent.inputTranscription.text;
+               if (text) {
+                 setTranscript(prev => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.role === 'user' && !last.isFinal) {
+                      const newPrev = [...prev];
+                      newPrev[newPrev.length - 1] = { ...last, text: last.text + text };
+                      return newPrev;
+                    }
+                    return [...prev, { role: 'user', text: text, isFinal: false }];
+                 });
+               }
+               if (message.serverContent.inputTranscription.finished) {
+                 setTranscript(prev => {
+                    const last = prev[prev.length - 1];
+                    if (last && last.role === 'user') {
+                      const newPrev = [...prev];
+                      newPrev[newPrev.length - 1] = { ...last, isFinal: true };
+                      return newPrev;
+                    }
+                    return prev;
+                 });
+               }
             }
             
             if (message.serverContent?.interrupted) {
@@ -207,6 +280,8 @@ export default function App() {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
           systemInstruction: "You are Bók Lífsins (The Book of Life), a wise and helpful Icelandic AI assistant. You speak Icelandic.",
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
         },
       });
 
@@ -226,17 +301,48 @@ export default function App() {
     };
   }, []);
 
+  const saveProfile = () => {
+    setProfile(editProfile);
+    setShowProfileModal(false);
+  };
+
+  const getStatusColor = (status: UserStatus) => {
+    switch (status) {
+      case 'online': return 'text-emerald-400 bg-emerald-400/20';
+      case 'offline': return 'text-slate-400 bg-slate-400/20';
+      case 'in-game': return 'text-purple-400 bg-purple-400/20';
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-[#0a0c10] text-slate-200 font-sans flex flex-col">
+    <div className="min-h-screen bg-[#0a0c10] text-slate-200 font-sans flex flex-col relative">
       <header className="flex items-center justify-between p-6">
         <div className="flex items-center gap-4">
           <button className="text-slate-400 hover:text-white transition-colors text-sm tracking-widest font-medium">
             &larr; TIL BAKA
           </button>
         </div>
-        <button className="p-3 bg-indigo-500/20 text-indigo-400 rounded-xl hover:bg-indigo-500/30 transition-colors">
-          <Sun className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => {
+              setEditProfile(profile);
+              setShowProfileModal(true);
+            }}
+            className="flex items-center gap-3 p-2 pr-4 bg-[#11141a] border border-slate-800 rounded-full hover:bg-slate-800/50 transition-colors"
+          >
+            <div className="relative">
+              <img src={profile.avatar} alt="Avatar" className="w-8 h-8 rounded-full bg-slate-800" />
+              <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#11141a] ${
+                profile.status === 'online' ? 'bg-emerald-500' : 
+                profile.status === 'in-game' ? 'bg-purple-500' : 'bg-slate-500'
+              }`} />
+            </div>
+            <span className="text-sm font-medium text-slate-300">{profile.username}</span>
+          </button>
+          <button className="p-3 bg-indigo-500/20 text-indigo-400 rounded-xl hover:bg-indigo-500/30 transition-colors">
+            <Sun className="w-5 h-5" />
+          </button>
+        </div>
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -309,29 +415,44 @@ export default function App() {
 
         <div className="lg:col-span-8 flex flex-col gap-8">
           
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 h-full">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold tracking-widest text-slate-400">TRANSCRIPT</h2>
-              <button className="text-sm text-indigo-400 hover:text-indigo-300 flex items-center gap-2 transition-colors font-medium tracking-widest">
-                OPNA SÖGU <ArrowRight className="w-4 h-4" />
-              </button>
             </div>
             
-            <div className="bg-[#11141a] border border-slate-800 rounded-3xl p-8 min-h-[350px] flex flex-col shadow-xl shadow-black/50">
+            <div className="bg-[#11141a] border border-slate-800 rounded-3xl p-8 flex-1 min-h-[450px] flex flex-col shadow-xl shadow-black/50">
               {transcript.length === 0 ? (
                 <div className="flex-1 flex items-center justify-center text-slate-500 text-lg">
                   Smelltu á Byrja til að hefja samtal...
                 </div>
               ) : (
-                <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
+                <div ref={transcriptContainerRef} className="flex-1 flex flex-col gap-6 overflow-y-auto pr-4 scroll-smooth">
                   {transcript.map((msg, idx) => (
-                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div key={idx} className={`flex flex-col gap-1.5 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className="flex items-center gap-2 px-2">
+                        {msg.role === 'user' ? (
+                          <>
+                            <span className="text-xs font-medium text-slate-500">{profile.username}</span>
+                            <img src={profile.avatar} alt="" className="w-4 h-4 rounded-full" />
+                          </>
+                        ) : (
+                          <>
+                            <div className="w-4 h-4 rounded-full bg-indigo-500/20 flex items-center justify-center">
+                              <div className="w-2 h-2 rounded-full bg-indigo-400" />
+                            </div>
+                            <span className="text-xs font-medium text-slate-500">Bók Lífsins</span>
+                          </>
+                        )}
+                      </div>
                       <div className={`max-w-[80%] rounded-2xl px-5 py-3 text-lg leading-relaxed ${
                         msg.role === 'user' 
-                          ? 'bg-indigo-500/20 text-indigo-100 border border-indigo-500/30' 
-                          : 'bg-slate-800 text-slate-200 border border-slate-700'
+                          ? 'bg-indigo-500/20 text-indigo-100 border border-indigo-500/30 rounded-tr-sm' 
+                          : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-sm'
                       }`}>
                         {msg.text}
+                        {!msg.isFinal && (
+                          <span className="inline-block w-1.5 h-4 ml-1 bg-current animate-pulse opacity-50 align-middle" />
+                        )}
                       </div>
                     </div>
                   ))}
@@ -340,27 +461,81 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-4">
-            <h2 className="text-sm font-semibold tracking-widest text-slate-400">NÝLEG SÍMTÖL</h2>
-            
-            <div className="bg-[#11141a] border border-slate-800 rounded-3xl overflow-hidden shadow-xl shadow-black/50">
-              <div className="max-h-[300px] overflow-y-auto p-3 flex flex-col gap-2">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="p-4 rounded-2xl hover:bg-slate-800/50 transition-colors border border-transparent hover:border-slate-700 cursor-pointer flex flex-col gap-3">
-                    <div className="font-medium text-slate-200 text-lg">Símtal {4-i}/2/2026</div>
-                    <div className="flex items-center gap-3 text-xs font-medium">
-                      <span className="text-slate-500">{4-i}/2/2026, 8:44:38 AM</span>
-                      <span className="px-2 py-1 rounded-md bg-indigo-500/20 text-indigo-400 border border-indigo-500/20">inbound</span>
-                      <span className="px-2 py-1 rounded-md bg-slate-800 text-slate-400 border border-slate-700">twilio</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
         </div>
       </main>
+
+      {/* Profile Modal */}
+      {showProfileModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#11141a] border border-slate-800 rounded-3xl p-8 max-w-md w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-8">
+              <h2 className="text-2xl font-semibold text-white">Stillingar</h2>
+              <button onClick={() => setShowProfileModal(false)} className="text-slate-400 hover:text-white">
+                <Square className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium text-slate-400">Notendanafn</label>
+                <input 
+                  type="text" 
+                  value={editProfile.username}
+                  onChange={e => setEditProfile({...editProfile, username: e.target.value})}
+                  className="bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium text-slate-400">Avatar URL</label>
+                <div className="flex gap-4 items-center">
+                  <img src={editProfile.avatar} alt="Preview" className="w-12 h-12 rounded-full bg-slate-800" />
+                  <input 
+                    type="text" 
+                    value={editProfile.avatar}
+                    onChange={e => setEditProfile({...editProfile, avatar: e.target.value})}
+                    className="flex-1 bg-[#0a0c10] border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
+                <button 
+                  onClick={() => setEditProfile({...editProfile, avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${Math.random()}`})}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 self-end mt-1"
+                >
+                  Slembi avatar
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <label className="text-sm font-medium text-slate-400">Staða</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {(['online', 'offline', 'in-game'] as UserStatus[]).map(status => (
+                    <button
+                      key={status}
+                      onClick={() => setEditProfile({...editProfile, status})}
+                      className={`py-2 px-3 rounded-xl border text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                        editProfile.status === status 
+                          ? getStatusColor(status) + ' border-current'
+                          : 'bg-[#0a0c10] text-slate-400 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <Circle className={`w-3 h-3 ${editProfile.status === status ? 'fill-current' : ''}`} />
+                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button 
+                onClick={saveProfile}
+                className="w-full mt-4 py-3 bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl font-semibold transition-colors"
+              >
+                Vista stillingar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
