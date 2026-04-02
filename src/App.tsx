@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Square, Sun, ArrowRight, Activity, User, Settings, Circle, Camera, MonitorUp, Share2, Send, VideoOff } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
+import ReactMarkdown from 'react-markdown';
+import { logger } from './lib/logger';
 
 type UserStatus = 'online' | 'offline' | 'in-game';
 
@@ -10,10 +12,17 @@ interface UserProfile {
   status: UserStatus;
 }
 
+interface TranscriptMessage {
+  role: string;
+  text?: string;
+  inlineData?: { mimeType: string; data: string };
+  isFinal?: boolean;
+}
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [transcript, setTranscript] = useState<{role: string, text: string, isFinal?: boolean}[]>([]);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState<number>(0);
   
@@ -61,6 +70,7 @@ export default function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const filterRef = useRef<BiquadFilterNode | null>(null);
 
   // Video Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -113,8 +123,8 @@ export default function App() {
 
       audioQueueRef.current.push(audioBuffer);
       playNextInQueue();
-    } catch (e) {
-      console.error("Error decoding audio", e);
+    } catch (e: any) {
+      logger.error("Error decoding audio", { error: e, message: e.message });
     }
   };
 
@@ -151,6 +161,10 @@ export default function App() {
     if (processorRef.current) {
       processorRef.current.disconnect();
       processorRef.current = null;
+    }
+    if (filterRef.current) {
+      filterRef.current.disconnect();
+      filterRef.current = null;
     }
     if (sourceRef.current) {
       sourceRef.current.disconnect();
@@ -196,10 +210,13 @@ export default function App() {
           audio: {
             channelCount: 1,
             sampleRate: 16000,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
           },
         });
       } catch (mediaErr: any) {
-        console.error("Microphone error:", mediaErr);
+        logger.error("Microphone error", { error: mediaErr, name: mediaErr.name, message: mediaErr.message });
         if (mediaErr.name === 'NotAllowedError') {
           setError("Aðgangur að hljóðnema var hafnaður. Vinsamlegast leyfðu hljóðnema í vafranum.");
         } else if (mediaErr.name === 'NotFoundError') {
@@ -218,10 +235,17 @@ export default function App() {
       const source = audioCtx.createMediaStreamSource(stream);
       sourceRef.current = source;
 
+      // Noise Reduction: Highpass filter to remove low-frequency rumble and wind noise
+      const highpassFilter = audioCtx.createBiquadFilter();
+      highpassFilter.type = 'highpass';
+      highpassFilter.frequency.value = 85; // 85Hz is standard for voice to remove rumble
+      filterRef.current = highpassFilter;
+
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
-      source.connect(processor);
+      source.connect(highpassFilter);
+      highpassFilter.connect(processor);
       processor.connect(audioCtx.destination);
 
       const sessionPromise = ai.live.connect({
@@ -238,11 +262,16 @@ export default function App() {
               for (let i = 0; i < inputData.length; i++) {
                 sum += Math.abs(inputData[i]);
               }
-              setAudioLevel(sum / inputData.length);
+              const averageLevel = sum / inputData.length;
+              setAudioLevel(averageLevel);
+
+              // Noise Gate: Mute audio if below threshold to reduce background hiss
+              const NOISE_GATE_THRESHOLD = 0.002;
+              const isSilent = averageLevel < NOISE_GATE_THRESHOLD;
 
               const pcm16 = new Int16Array(inputData.length);
               for (let i = 0; i < inputData.length; i++) {
-                let s = Math.max(-1, Math.min(1, inputData[i]));
+                let s = isSilent ? 0 : Math.max(-1, Math.min(1, inputData[i]));
                 pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
               }
               
@@ -271,12 +300,16 @@ export default function App() {
             if (parts) {
               for (const part of parts) {
                 if (part.inlineData && part.inlineData.data) {
-                  playAudioBase64(part.inlineData.data);
+                  if (part.inlineData.mimeType?.startsWith('audio/')) {
+                    playAudioBase64(part.inlineData.data);
+                  } else {
+                    setTranscript(prev => [...prev, { role: 'model', inlineData: part.inlineData, isFinal: false }]);
+                  }
                 }
                 if (part.text) {
                   setTranscript(prev => {
                     const last = prev[prev.length - 1];
-                    if (last && last.role === 'model' && !last.isFinal) {
+                    if (last && last.role === 'model' && !last.isFinal && last.text !== undefined) {
                       const newPrev = [...prev];
                       newPrev[newPrev.length - 1] = { ...last, text: last.text + part.text };
                       return newPrev;
@@ -335,10 +368,11 @@ export default function App() {
             }
           },
           onclose: () => {
+            logger.info("Live API Connection closed");
             stopConversation();
           },
           onerror: (err: any) => {
-            console.error("Live API Error:", err);
+            logger.error("Live API Error", { error: err, message: err.message });
             let errMsg = "Tengingarvilla kom upp.";
             if (err.message) {
               errMsg += ` (${err.message})`;
@@ -363,9 +397,10 @@ export default function App() {
       });
 
       sessionRef.current = sessionPromise;
+      logger.info("Conversation started successfully");
 
     } catch (err: any) {
-      console.error("Failed to start conversation:", err);
+      logger.error("Failed to start conversation", { error: err, message: err.message });
       setError(`Villa við að tengjast: ${err.message || "Óþekkt villa"}`);
       setIsConnecting(false);
       stopConversation();
@@ -398,8 +433,9 @@ export default function App() {
       stream.getVideoTracks()[0].onended = () => {
         stopVideo();
       };
-    } catch (err) {
-      console.error("Failed to start video:", err);
+      logger.info(`Started video sharing in mode: ${mode}`);
+    } catch (err: any) {
+      logger.error("Failed to start video", { error: err, message: err.message });
       setVideoMode('none');
     }
   };
@@ -468,8 +504,9 @@ export default function App() {
         await navigator.clipboard.writeText(window.location.href);
         alert('Hlekkur afritaður!');
       }
-    } catch (err) {
-      console.error('Error sharing:', err);
+      logger.info("App shared successfully");
+    } catch (err: any) {
+      logger.error("Error sharing", { error: err, message: err.message });
     }
   };
 
@@ -686,12 +723,23 @@ export default function App() {
                           </>
                         )}
                       </div>
-                      <div className={`max-w-[80%] rounded-2xl px-5 py-3 text-lg leading-relaxed ${
+                       <div className={`max-w-[80%] rounded-2xl px-5 py-3 text-lg leading-relaxed ${
                         msg.role === 'user' 
                           ? 'bg-indigo-500/20 text-indigo-100 border border-indigo-500/30 rounded-tr-sm' 
                           : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-sm'
                       }`}>
-                        {msg.text}
+                        {msg.text && (
+                          <div className="markdown-body">
+                            <ReactMarkdown>{msg.text}</ReactMarkdown>
+                          </div>
+                        )}
+                        {msg.inlineData && msg.inlineData.mimeType.startsWith('image/') && (
+                          <img 
+                            src={`data:${msg.inlineData.mimeType};base64,${msg.inlineData.data}`} 
+                            alt="Model generated" 
+                            className="max-w-full rounded-lg mt-2"
+                          />
+                        )}
                         {!msg.isFinal && (
                           <span className="inline-block w-1.5 h-4 ml-1 bg-current animate-pulse opacity-50 align-middle" />
                         )}
