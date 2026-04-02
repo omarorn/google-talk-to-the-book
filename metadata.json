@@ -1,0 +1,5 @@
+{
+  "name": "Bók Lífsins - Voice AI",
+  "description": "A real-time voice conversation interface for Bók Lífsins using Gemini Live API.",
+  "requestFramePermissions": ["microphone"]
+}
