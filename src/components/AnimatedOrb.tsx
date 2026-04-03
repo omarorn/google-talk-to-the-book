@@ -18,7 +18,7 @@ export const AnimatedOrb: React.FC<AnimatedOrbProps> = ({ state, audioLevel = 0 
             `0 0 ${40 + audioLevel * 100}px rgba(99, 102, 241, 0.8)`,
             '0 0 20px rgba(99, 102, 241, 0.4)'
           ],
-          transition: { duration: 0.2, repeat: Infinity, ease: "easeInOut" }
+          transition: { duration: 0.2, repeat: Infinity, ease: "easeInOut" } as any
         };
       case 'thinking':
         return {
@@ -30,7 +30,7 @@ export const AnimatedOrb: React.FC<AnimatedOrbProps> = ({ state, audioLevel = 0 
             '0 0 60px rgba(168, 85, 247, 0.8)',
             '0 0 30px rgba(168, 85, 247, 0.5)'
           ],
-          transition: { duration: 2, repeat: Infinity, ease: "linear" }
+          transition: { duration: 2, repeat: Infinity, ease: "linear" } as any
         };
       case 'speaking':
         return {
@@ -41,7 +41,7 @@ export const AnimatedOrb: React.FC<AnimatedOrbProps> = ({ state, audioLevel = 0 
             `0 0 ${40 + audioLevel * 80}px rgba(16, 185, 129, 0.8)`,
             '0 0 20px rgba(16, 185, 129, 0.4)'
           ],
-          transition: { duration: 0.15, repeat: Infinity, ease: "easeInOut" }
+          transition: { duration: 0.15, repeat: Infinity, ease: "easeInOut" } as any
         };
       default: // idle
         return {
@@ -52,7 +52,7 @@ export const AnimatedOrb: React.FC<AnimatedOrbProps> = ({ state, audioLevel = 0 
             '0 0 20px rgba(148, 163, 184, 0.4)',
             '0 0 10px rgba(148, 163, 184, 0.2)'
           ],
-          transition: { duration: 4, repeat: Infinity, ease: "easeInOut" }
+          transition: { duration: 4, repeat: Infinity, ease: "easeInOut" } as any
         };
     }
   };
@@ -93,7 +93,7 @@ export const AnimatedOrb: React.FC<AnimatedOrbProps> = ({ state, audioLevel = 0 
                 "M 20,50 Q 50,20 80,50 T 20,50"
               ]
             }}
-            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" } as any}
           />
         </svg>
       </motion.div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Square, Activity, Camera, MonitorUp } from 'lucide-react';
+import { Mic, Square, Activity, Camera, MonitorUp, Share2, Sun, VideoOff, X, Paperclip, Circle, Send } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
+import Markdown from 'react-markdown';
 import { logger } from './lib/logger';
 import { MCPClient } from './lib/mcp';
 import { UserProfile, TranscriptMessage, UserStatus } from './types';
@@ -198,6 +199,13 @@ export default function App() {
     setAudioLevel(0);
   };
 
+  const validateApiKey = (key: string) => {
+    if (!key) return "Vantar API lykil. Vinsamlegast bættu honum við í stillingum.";
+    if (key.length < 20) return "API lykillinn virðist vera of stuttur eða ógildur.";
+    if (!key.startsWith("AIza")) return "API lykillinn virðist ekki vera gildur Gemini lykill (ætti að byrja á 'AIza').";
+    return null;
+  };
+
   const startConversation = async () => {
     try {
       setIsConnecting(true);
@@ -205,12 +213,14 @@ export default function App() {
       setTranscript([]);
 
       const currentKey = apiKey.trim() || process.env.GEMINI_API_KEY;
-      if (!currentKey) {
-        setError("API lykill vantar. Vinsamlegast bættu honum við í stillingum.");
+      const keyError = validateApiKey(currentKey || '');
+      if (keyError) {
+        setError(keyError);
         setIsConnecting(false);
         return;
       }
-      const ai = new GoogleGenAI({ apiKey: currentKey });
+      
+      const ai = new GoogleGenAI({ apiKey: currentKey! });
 
       let tools: any[] = [];
       if (mcpUrl.trim()) {
@@ -228,8 +238,18 @@ export default function App() {
               }))
             }];
           }
-        } catch (err) {
+        } catch (err: any) {
           logger.error("Failed to initialize MCP client", { err });
+          // Don't block the conversation if MCP fails, just warn the user in the transcript
+          let errorDetails = err.message;
+          if (errorDetails.includes('Failed to fetch') || errorDetails.includes('CORS')) {
+            errorDetails += " (Vinsamlegast athugaðu hvort slóðin sé rétt, t.d. endi á /sse, og hvort MCP lykillinn sé réttur í stillingum)";
+          }
+          setTranscript(prev => [...prev, { 
+            role: 'model', 
+            text: `⚠️ Gat ekki tengst MCP þjóni (${mcpUrl}): ${errorDetails}. Samtal heldur áfram án tækja.`, 
+            isFinal: true 
+          }]);
         }
       }
 
@@ -455,12 +475,20 @@ export default function App() {
           onerror: (err: any) => {
             logger.error("Live API Error", { error: err, message: err.message });
             let errMsg = "Tengingarvilla kom upp.";
-            if (err.message) {
-              errMsg += ` (${err.message})`;
-              if (err.message.includes("API key not valid") || err.message.includes("401") || err.message.includes("403")) {
-                errMsg = "Ógildur API lykill. Vinsamlegast athugaðu stillingar.";
-              }
+            const msg = err.message || "";
+            
+            if (msg.includes("API key not valid") || msg.includes("401") || msg.includes("403")) {
+              errMsg = "Ógildur API lykill. Vinsamlegast athugaðu stillingar.";
+            } else if (msg.includes("Quota exceeded") || msg.includes("429")) {
+              errMsg = "Notkunarmörkum náð (Quota exceeded). Vinsamlegast reyndu aftur síðar.";
+            } else if (msg.includes("Model not found") || msg.includes("404")) {
+              errMsg = "Líkan fannst ekki. Hugsanlega er það ekki aðgengilegt á þínu svæði.";
+            } else if (msg.includes("NetworkError") || msg.includes("failed to connect")) {
+              errMsg = "Gat ekki náð sambandi við þjónustu. Athugaðu nettenginguna þína.";
+            } else if (msg) {
+              errMsg = `Villa kom upp: ${msg}`;
             }
+            
             setError(errMsg);
             stopConversation();
           }
@@ -484,7 +512,18 @@ export default function App() {
 
     } catch (err: any) {
       logger.error("Failed to start conversation", { error: err, message: err.message });
-      setError(`Villa við að tengjast: ${err.message || "Óþekkt villa"}`);
+      let errMsg = "Villa við að tengjast.";
+      const msg = err.message || "";
+      
+      if (msg.includes("Permission denied") || msg.includes("NotAllowedError")) {
+        errMsg = "Aðgangi að hljóðnema hafnað.";
+      } else if (msg.includes("API key not valid")) {
+        errMsg = "Ógildur API lykill.";
+      } else if (msg) {
+        errMsg = `Villa við að tengjast: ${msg}`;
+      }
+      
+      setError(errMsg);
       setIsConnecting(false);
       stopConversation();
     }
@@ -598,12 +637,21 @@ export default function App() {
          logger.warn("Attachments are not supported in Live API mode yet.");
       }
       sessionRef.current.then((session: any) => {
-        session.sendRealtimeInput([{ text: userText }]);
+        if (userText) {
+          session.sendRealtimeInput({ text: userText });
+        }
       });
     } else {
       setIsGenerating(true);
+      setError(null);
       try {
-        const ai = new GoogleGenAI({ apiKey: apiKey || import.meta.env.VITE_GEMINI_API_KEY });
+        const currentApiKey = apiKey || (import.meta as any).env.VITE_GEMINI_API_KEY;
+        const keyError = validateApiKey(currentApiKey || '');
+        if (keyError) {
+          throw new Error(keyError);
+        }
+
+        const ai = new GoogleGenAI({ apiKey: currentApiKey! });
         
         const contents = transcript.map(msg => {
           const parts: any[] = [];
@@ -633,8 +681,17 @@ export default function App() {
                 }))
               }];
             }
-          } catch (err) {
+          } catch (err: any) {
             logger.error("Failed to initialize MCP client for standard chat", { err });
+            let errorDetails = err.message || "Óþekkt villa";
+            if (errorDetails.includes('Failed to fetch') || errorDetails.includes('CORS')) {
+              errorDetails += " (Vinsamlegast athugaðu hvort slóðin sé rétt, t.d. endi á /sse, og hvort MCP lykillinn sé réttur í stillingum)";
+            }
+            setTranscript(prev => [...prev, { 
+              role: 'model', 
+              text: `⚠️ Gat ekki tengst MCP þjóni (${mcpUrl}): ${errorDetails}. Samtal heldur áfram án tækja.`, 
+              isFinal: true 
+            }]);
           }
         }
 
@@ -691,7 +748,7 @@ export default function App() {
             }
           }
 
-          contents.push(response.candidates![0].content);
+          contents.push(response.candidates![0].content as any);
           contents.push({ role: 'user', parts: functionResponses });
 
           response = await ai.models.generateContent({
@@ -726,7 +783,18 @@ export default function App() {
         }
       } catch (err: any) {
         logger.error("Chat error", { error: err });
-        setError("Villa við að senda skilaboð: " + err.message);
+        let errMsg = "Villa við að senda skilaboð.";
+        const msg = err.message || "";
+        
+        if (msg.includes("API key not valid") || msg.includes("401") || msg.includes("403")) {
+          errMsg = "Ógildur API lykill. Vinsamlegast athugaðu stillingar.";
+        } else if (msg.includes("Quota exceeded") || msg.includes("429")) {
+          errMsg = "Notkunarmörkum náð (Quota exceeded). Vinsamlegast reyndu aftur síðar.";
+        } else if (msg) {
+          errMsg = `Villa kom upp: ${msg}`;
+        }
+        
+        setError(errMsg);
       } finally {
         setIsGenerating(false);
       }
@@ -983,7 +1051,7 @@ export default function App() {
                           <div className="mb-3 p-3 bg-black/20 rounded-xl border border-slate-700/50 text-sm text-slate-400 italic">
                             <div className="text-xs font-semibold uppercase tracking-wider mb-1 text-slate-500">Hugsun (Thinking)</div>
                             <div className="markdown-body opacity-80">
-                              <ReactMarkdown>{msg.thought}</ReactMarkdown>
+                              <Markdown>{msg.thought}</Markdown>
                             </div>
                           </div>
                         )}
@@ -998,7 +1066,7 @@ export default function App() {
                         )}
                         {msg.text && (
                           <div className="markdown-body">
-                            <ReactMarkdown>{msg.text}</ReactMarkdown>
+                            <Markdown>{msg.text}</Markdown>
                           </div>
                         )}
                         {msg.inlineData && msg.inlineData.mimeType.startsWith('image/') && (
