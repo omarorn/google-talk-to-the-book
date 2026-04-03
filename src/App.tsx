@@ -81,6 +81,7 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoStreamRef = useRef<MediaStream | null>(null);
   const videoIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastFrameDataRef = useRef<ImageData | null>(null);
 
   // Audio playback queue
   const audioQueueRef = useRef<AudioBuffer[]>([]);
@@ -242,7 +243,7 @@ export default function App() {
           logger.error("Failed to initialize MCP client", { err });
           // Don't block the conversation if MCP fails, just warn the user in the transcript
           let errorDetails = err.message;
-          if (errorDetails.includes('Failed to fetch') || errorDetails.includes('CORS')) {
+          if (errorDetails.includes('Failed to fetch') || errorDetails.includes('CORS') || errorDetails.includes('Invalid content type') || errorDetails.includes('Non-200 status code')) {
             errorDetails += " (Vinsamlegast athugaðu hvort slóðin sé rétt, t.d. endi á /sse, og hvort MCP lykillinn sé réttur í stillingum)";
           }
           setTranscript(prev => [...prev, { 
@@ -550,7 +551,7 @@ export default function App() {
 
       videoIntervalRef.current = setInterval(() => {
         captureAndSendFrame();
-      }, 1000); // 1 fps
+      }, 200); // 5 fps
       
       stream.getVideoTracks()[0].onended = () => {
         stopVideo();
@@ -567,6 +568,7 @@ export default function App() {
       clearInterval(videoIntervalRef.current);
       videoIntervalRef.current = null;
     }
+    lastFrameDataRef.current = null;
     if (videoStreamRef.current) {
       videoStreamRef.current.getTracks().forEach(t => t.stop());
       videoStreamRef.current = null;
@@ -582,22 +584,64 @@ export default function App() {
     
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
     if (!ctx || video.videoWidth === 0 || video.videoHeight === 0) return;
+    
+    // Use a smaller resolution for change detection to improve performance
+    const detectionWidth = 64;
+    const detectionHeight = 48;
     
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-    const base64Data = dataUrl.split(',')[1];
+    // Create a temporary canvas for detection
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = detectionWidth;
+    tempCanvas.height = detectionHeight;
+    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+    if (!tempCtx) return;
     
-    sessionRef.current.then((session: any) => {
-      session.sendRealtimeInput({
-        video: { mimeType: 'image/jpeg', data: base64Data }
+    tempCtx.drawImage(video, 0, 0, detectionWidth, detectionHeight);
+    const currentFrameData = tempCtx.getImageData(0, 0, detectionWidth, detectionHeight);
+    
+    let hasSignificantChange = true;
+    
+    if (lastFrameDataRef.current) {
+      const prevData = lastFrameDataRef.current.data;
+      const currData = currentFrameData.data;
+      let diffCount = 0;
+      const threshold = 30; // Pixel difference threshold
+      
+      for (let i = 0; i < currData.length; i += 4) {
+        const rDiff = Math.abs(currData[i] - prevData[i]);
+        const gDiff = Math.abs(currData[i+1] - prevData[i+1]);
+        const bDiff = Math.abs(currData[i+2] - prevData[i+2]);
+        
+        if (rDiff > threshold || gDiff > threshold || bDiff > threshold) {
+          diffCount++;
+        }
+      }
+      
+      // If less than 5% of pixels changed significantly, skip sending
+      if (diffCount < (currData.length / 4) * 0.05) {
+        hasSignificantChange = false;
+      }
+    }
+    
+    if (hasSignificantChange) {
+      lastFrameDataRef.current = currentFrameData;
+      
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      const base64Data = dataUrl.split(',')[1];
+      
+      sessionRef.current.then((session: any) => {
+        session.sendRealtimeInput({
+          video: { mimeType: 'image/jpeg', data: base64Data }
+        });
       });
-    });
+    }
   };
 
   // Text Input Logic
@@ -684,7 +728,7 @@ export default function App() {
           } catch (err: any) {
             logger.error("Failed to initialize MCP client for standard chat", { err });
             let errorDetails = err.message || "Óþekkt villa";
-            if (errorDetails.includes('Failed to fetch') || errorDetails.includes('CORS')) {
+            if (errorDetails.includes('Failed to fetch') || errorDetails.includes('CORS') || errorDetails.includes('Invalid content type') || errorDetails.includes('Non-200 status code')) {
               errorDetails += " (Vinsamlegast athugaðu hvort slóðin sé rétt, t.d. endi á /sse, og hvort MCP lykillinn sé réttur í stillingum)";
             }
             setTranscript(prev => [...prev, { 
